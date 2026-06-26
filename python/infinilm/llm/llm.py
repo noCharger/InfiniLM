@@ -67,10 +67,14 @@ class LLMEngine:
                     f"KV Connector created: {config.kv_transfer_config.kv_connector} "
                     f"(role={config.kv_transfer_config.kv_role})"
                 )
+            llm_config = self.model_runner.model_engine.hf_config
+            if "text_config" in llm_config:
+                llm_config = llm_config["text_config"]
 
-            max_position_embeddings = self.model_runner.model_engine.hf_config.get(
+            max_position_embeddings = llm_config.get(
                 "max_position_embeddings", config.max_cache_len
             )
+
             max_num_batched_tokens = int(
                 os.getenv("INFINILM_MAX_NUM_BATCHED_TOKENS", max_position_embeddings)
             )
@@ -721,13 +725,13 @@ class AsyncLLMEngine:
         elif prompt is not None:
             prompt_token_ids = self.engine.tokenize(prompt)
         else:
-            assert (
-                messages is not None
-            ), "Either messages or prompt/prompt_token_ids must be provided"
+            assert messages is not None, (
+                "Either messages or prompt/prompt_token_ids must be provided"
+            )
 
-            assert (
-                apply_chat_template
-            ), "apply_chat_template needs to be true for multi-role conversation"
+            assert apply_chat_template, (
+                "apply_chat_template needs to be true for multi-role conversation"
+            )
 
             prompt = self.engine.apply_chat_template(
                 messages, add_generation_prompt=add_generation_prompt
@@ -752,128 +756,4 @@ class AsyncLLMEngine:
             )
 
         if sampling_params is None:
-            sampling_params = SamplingParams(max_tokens=self.config.max_tokens)
-        elif sampling_params.max_tokens is None:
-            sampling_params = sampling_params.clone()
-            sampling_params.max_tokens = self.config.max_tokens
-
-        request = InferenceRequest(
-            request_id=request_id,
-            prompt=prompt,
-            prompt_token_ids=prompt_token_ids,
-            processed_inputs=processed_inputs,
-            mm_token_index_mappings=mm_index_mappings,
-            sampling_params=sampling_params,
-            eos_token_ids=self.engine.eos_token_ids,
-            request_data=request_data,
-        )
-
-        if request_data and "kv_transfer_params" in request_data:
-            kv_params = request_data["kv_transfer_params"]
-            request.kv_transfer_params = kv_params
-
-        # Initialize output queue for streaming
-        _ = request.output_queue
-
-        self.engine.add_request(request)
-        return request
-
-    def add_chat_request(
-        self,
-        messages: List[dict],
-        sampling_params: Optional[SamplingParams] = None,
-        request_id: Optional[str] = None,
-        request_data: Optional[dict] = None,
-        add_generation_prompt: bool = True,
-        **kwargs,
-    ) -> InferenceRequest:
-        """Add a chat request to the engine.
-
-        Args:
-            messages: List of message dicts (chat conversation).
-            sampling_params: Sampling parameters.
-            request_id: Optional request ID.
-            request_data: Optional request data dict.
-
-        Returns:
-            The created InferenceRequest object.
-        """
-
-        return self.add_request(
-            messages=messages,
-            apply_chat_template=True,
-            add_generation_prompt=add_generation_prompt,
-            sampling_params=sampling_params,
-            request_id=request_id,
-            request_data=request_data,
-        )
-
-    async def stream_request(
-        self,
-        request: InferenceRequest,
-        timeout: float = 100.0,
-        request_timeout: Optional[float] = None,
-    ) -> AsyncIterator[TokenOutput]:
-        """Stream tokens from a request.
-
-        Args:
-            request: The inference request to stream from.
-            timeout: Timeout for waiting on each token.
-
-        Yields:
-            TokenOutput objects for each generated token.
-        """
-        import asyncio
-
-        start = time.time()
-        try:
-            while True:
-                try:
-                    if request_timeout and time.time() - start > float(request_timeout):
-                        logger.warning(
-                            f"Request {request.request_id} exceeded request timeout of {request_timeout} seconds"
-                        )
-                        self.add_aborted_req(request, FinishReason.TIMEOUT)
-
-                    token_output = await asyncio.wait_for(
-                        request.output_queue.async_q.get(), timeout=timeout
-                    )
-
-                    request.output_queue.async_q.task_done()
-
-                    yield token_output
-
-                    if token_output.finished:
-                        break
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Timeout while waiting for token from request {request.request_id}"
-                    )
-                    if request.is_aborted():
-                        while not request.output_queue.async_q.empty():
-                            try:
-                                token_output = request.output_queue.async_q.get_nowait()
-                                request.output_queue.async_q.task_done()
-                                yield token_output
-                            except asyncio.QueueEmpty:
-                                break
-
-                        yield TokenOutput(
-                            request_id=request.request_id,
-                            token_id=-1,
-                            token_text="",
-                            finished=True,
-                            finish_reason=request.finish_reason,
-                            generated_text=request.generated_text,
-                        )
-                        break
-                    continue
-                except Exception as e:
-                    logger.error(
-                        f"Error while streaming request {request.request_id}: {e}"
-                    )
-                    break
-        finally:
-            # Unified cleanup point: runs whether the loop exits normally,
-            # via exception, or via aclose() (GeneratorExit from Starlette).
-            await request.close()
+            sampling_params = SamplingParams(max_

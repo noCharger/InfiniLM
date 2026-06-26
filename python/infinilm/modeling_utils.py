@@ -661,10 +661,29 @@ def _remap_mamba(state_dict, config=None):
 
 
 # Model type → remap function mapping
+def _remap_qwen3_5(state_dict, config=None):
+    """Apply Qwen3.5-specific load-time weight fixes."""
+    state_dict = drop_keys(state_dict, ["mtp."])
+
+    norm_weight_suffixes = (
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_norm.weight",
+        "self_attn.k_norm.weight",
+    )
+
+    for key, tensor in state_dict.items():
+        if key == "model.norm.weight" or key.endswith(norm_weight_suffixes):
+            state_dict[key] = tensor + torch.ones_like(tensor)
+
+    return state_dict
+
+
 _WEIGHT_REMAPPER = {
     "glm4": _remap_glm4,
     "chatglm": _remap_chatglm,
     "baichuan": _remap_baichuan,
     "gpt2": _remap_gpt2,
     "mamba": _remap_mamba,
+    "qwen3_5": _remap_qwen3_5,
 }
