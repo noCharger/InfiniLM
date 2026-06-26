@@ -4,6 +4,28 @@ from infinilm.base_config import BaseConfig
 from infinilm.llm.llm import LLM
 
 
+def decode_video_frames(video_path, num_frames):
+    if not video_path:
+        return None
+    try:
+        from decord import VideoReader, cpu
+        from PIL import Image
+    except Exception:
+        return video_path
+
+    reader = VideoReader(video_path, ctx=cpu(0))
+    total = len(reader)
+    if total == 0:
+        return video_path
+    num_frames = max(1, min(num_frames or 32, total))
+    if num_frames == 1:
+        indices = [0]
+    else:
+        indices = [round(i * (total - 1) / (num_frames - 1)) for i in range(num_frames)]
+    batch = reader.get_batch(indices).asnumpy()
+    return [Image.fromarray(frame) for frame in batch]
+
+
 def test(
     prompts: list[str],
     model_path,
@@ -18,6 +40,8 @@ def test(
     attn_backend="default",
     use_mla=False,
     image_path=None,
+    video_path=None,
+    video_num_frames=None,
     skip_load=False,
     weight_load_mode="async",
 ):
@@ -49,7 +73,13 @@ def test(
         [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         for prompt in prompts
     ]
-    if image_path is not None:
+    if video_path is not None:
+        video_payload = decode_video_frames(video_path, video_num_frames)
+        for conversation in conversations:
+            conversation[0]["content"] = [
+                {"type": "video_url", "video_url": {"url": video_payload}}
+            ] + conversation[0]["content"]
+    elif image_path is not None:
         for conversation in conversations:
             conversation[0]["content"] = [
                 {"type": "image_url", "image_url": {"url": image_path}}
@@ -107,6 +137,8 @@ if __name__ == "__main__":
         attn_backend=cfg.attn,
         use_mla=cfg.use_mla,
         image_path=cfg.image,
+        video_path=cfg.video,
+        video_num_frames=cfg.video_num_frames,
         skip_load=cfg.skip_load,
         weight_load_mode=cfg.weight_load_mode,
     )

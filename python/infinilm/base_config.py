@@ -109,6 +109,33 @@ class BaseConfig:
 
         # Multimodal parameters
         self.image = self.args.image
+        self.video = self.args.video
+        self.image_max_pixels = self.args.image_max_pixels
+        self.image_min_pixels = self.args.image_min_pixels
+        self.video_num_frames = self.args.video_num_frames
+        self.video_max_pixels = self.args.video_max_pixels
+        self.video_min_pixels = self.args.video_min_pixels
+
+        if self.image_max_pixels is not None:
+            os.environ["INFINILM_VIDEONSA_IMAGE_MAX_PIXELS"] = str(
+                self.image_max_pixels
+            )
+        if self.image_min_pixels is not None:
+            os.environ["INFINILM_VIDEONSA_IMAGE_MIN_PIXELS"] = str(
+                self.image_min_pixels
+            )
+        if self.video_num_frames is not None:
+            os.environ["INFINILM_VIDEONSA_VIDEO_NUM_FRAMES"] = str(
+                self.video_num_frames
+            )
+        if self.video_max_pixels is not None:
+            os.environ["INFINILM_VIDEONSA_VIDEO_MAX_PIXELS"] = str(
+                self.video_max_pixels
+            )
+        if self.video_min_pixels is not None:
+            os.environ["INFINILM_VIDEONSA_VIDEO_MIN_PIXELS"] = str(
+                self.video_min_pixels
+            )
 
         if self.enable_paged_attn and self.attn == "default":
             self.attn = "paged-attn"
@@ -319,6 +346,42 @@ class BaseConfig:
             type=str,
             default=None,
             help="image path for multimodal models",
+        )
+        self.parser.add_argument(
+            "--image-max-pixels",
+            type=int,
+            default=200704,
+            help="maximum image pixels for VideoNSA/Qwen-VL preprocessing",
+        )
+        self.parser.add_argument(
+            "--image-min-pixels",
+            type=int,
+            default=None,
+            help="minimum image pixels for VideoNSA/Qwen-VL preprocessing",
+        )
+        self.parser.add_argument(
+            "--video",
+            type=str,
+            default=None,
+            help="video path for multimodal models",
+        )
+        self.parser.add_argument(
+            "--video-num-frames",
+            type=int,
+            default=None,
+            help="number of frames for VideoNSA/Qwen-VL preprocessing",
+        )
+        self.parser.add_argument(
+            "--video-max-pixels",
+            type=int,
+            default=200704,
+            help="maximum video frame pixels for VideoNSA/Qwen-VL preprocessing",
+        )
+        self.parser.add_argument(
+            "--video-min-pixels",
+            type=int,
+            default=None,
+            help="minimum video frame pixels for VideoNSA/Qwen-VL preprocessing",
         )
 
         # ---- PD separation arguments ----
