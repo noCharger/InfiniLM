@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generator
@@ -46,6 +47,9 @@ class ModelRunner:
         self.config = config
         self.kv_transfer_config = config.kv_transfer_config
         print(f"kv_transfer_config: {self.kv_transfer_config}")
+
+        # Set by LLMEngine to the shared ServingProfiler (opt-in, no-op when off).
+        self.profiler = None
 
         self._init_device()
 
@@ -166,17 +170,35 @@ class ModelRunner:
         )
 
     def _model_forward(self, scheduler_output):
+        prof = getattr(self, "profiler", None)
+        on = prof is not None and prof.enabled
+
         # Build model inputs
+        t0 = time.perf_counter() if on else 0.0
         model_input = self.processor.build_model_inputs(
             scheduler_output,
             self.config.temperature,
             self.config.top_p,
             self.config.top_k,
         )
+        if on:
+            prof.mark("build_inputs_ms", (time.perf_counter() - t0) * 1000)
 
-        # Run inference
+        # Run inference. forward() is async w.r.t. the device; with INFINILM_PROFILE_SYNC
+        # we sync before stopping the clock so forward_ms reflects real GPU time
+        # (important under --enable-graph / multi-stream where readback alone may not
+        # bound the work we want to attribute here).
+        t1 = time.perf_counter() if on else 0.0
         sampled_tokens = self.model_engine.forward(**model_input)
+        if on and prof.sync:
+            infinicore.sync_device()
+        if on:
+            prof.mark("forward_ms", (time.perf_counter() - t1) * 1000)
+
+        t2 = time.perf_counter() if on else 0.0
         sampled_tokens_list = sampled_tokens.to_numpy().tolist()
+        if on:
+            prof.mark("to_list_ms", (time.perf_counter() - t2) * 1000)
 
         return sampled_tokens_list
 

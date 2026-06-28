@@ -30,6 +30,7 @@ from infinilm.multimodal.multimodal import resolve_multimodal_inputs
 from infinilm.config.kv_transfer import KVTransferConfig
 from infinilm.config.engine_config import EngineConfig
 from infinilm.kv_connector import KVConnectorRole, KVConnectorFactory
+from infinilm.profiler import ServingProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,11 @@ class LLMEngine:
 
         self.cache_type = config.cache_type
 
+        # Serving-layer profiler (opt-in via INFINILM_PROFILE_STEPS). Shared with the
+        # model runner so per-step sub-phase timings land in a single step record.
+        self.profiler = ServingProfiler.from_env()
+        self.model_runner.profiler = self.profiler
+
         # Get EOS token IDs from model config
         self.eos_token_ids = self.model_runner.eos_token_id or []
         if isinstance(self.eos_token_ids, int):
@@ -112,15 +118,23 @@ class LLMEngine:
             - did_work
             - pending: Pending streaming outputs as (async_queue, TokenOutput) pairs.
         """
+        prof = self.profiler
+        prof.begin_step()
+
         # Schedule the next unit of work, which may be model execution,
         # connector control metadata, or both.
+        t0 = time.perf_counter() if prof.enabled else 0.0
         scheduler_output = self.scheduler.schedule()
         if scheduler_output is None:
             return False, []
+        if prof.enabled:
+            prof.mark("schedule_ms", (time.perf_counter() - t0) * 1000)
 
-        # Execute model
+        # Execute model (runner records build_inputs / forward / readback into prof)
         runner_output = self.model_runner.execute_model(scheduler_output)
         sampled_tokens_list = runner_output.sampled_token_ids
+
+        t_update = time.perf_counter() if prof.enabled else 0.0
         self.scheduler.update_from_output(runner_output)
 
         # Update request status
@@ -129,6 +143,9 @@ class LLMEngine:
             scheduler_output.scheduled_requests,
             sampled_tokens_list,
         )
+        if prof.enabled:
+            prof.mark("update_ms", (time.perf_counter() - t_update) * 1000)
+            self._record_profile_step(scheduler_output)
 
         # Return False (no immediate work) only when no requests were scheduled
         # and no KV transfers completed in this step.
@@ -142,6 +159,54 @@ class LLMEngine:
                 return False, pending
 
         return True, pending
+
+    def _record_profile_step(self, scheduler_output):
+        """Compose one per-step profiler record from scheduler state."""
+        reqs = scheduler_output.scheduled_requests
+        is_prefill = scheduler_output.is_prefill
+        batch = len(reqs)
+        if is_prefill:
+            num_tokens = sum(getattr(r, "get_total_length", lambda: 1)() for r in reqs)
+        else:
+            num_tokens = batch
+        q_wait, q_run, kv_used, kv_total = self._gather_serving_state()
+        self.profiler.record_step(
+            phase="prefill" if is_prefill else "decode",
+            batch=batch,
+            num_tokens=num_tokens,
+            q_wait=q_wait,
+            q_run=q_run,
+            kv_used=kv_used,
+            kv_total=kv_total,
+        )
+
+    def _gather_serving_state(self):
+        """Best-effort read of queue depth + KV-block usage (works for paged;
+        degrades to None for backends that lack these fields, e.g. static)."""
+        sch = self.scheduler
+
+        def _qsize(name):
+            q = getattr(sch, name, None)
+            try:
+                return q.sync_q.qsize()
+            except Exception:
+                return None
+
+        kv_used = kv_total = None
+        cm = getattr(sch, "cache_manager", None)
+        if cm is not None:
+            try:
+                kv_total = cm.num_blocks
+                kv_used = kv_total - cm.get_num_free_blocks()
+            except Exception:
+                kv_used = kv_total = None
+        return _qsize("waiting_queue"), _qsize("running_queue"), kv_used, kv_total
+
+    def format_profile_summary(self) -> str:
+        return self.profiler.format_summary()
+
+    def reset_profile(self):
+        self.profiler.reset()
 
     def _update_requests(
         self,
