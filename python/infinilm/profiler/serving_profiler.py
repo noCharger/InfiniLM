@@ -92,17 +92,25 @@ class ServingProfiler:
                 except OSError as e:  # don't let a bad path kill the server
                     print(f"[serving_profiler] cannot open {self.trace_path}: {e}", file=sys.stderr)
                     self._trace_fh = None
-            atexit.register(self.flush)
 
     @classmethod
     def from_env(cls):
+        """Production entry point: builds from env and wires atexit flushing.
+
+        Lifecycle (atexit) lives here rather than in __init__ so that bare
+        construction (tests, ad-hoc use) yields a pure recorder with no global
+        side effects.
+        """
         enabled = _truthy(os.getenv("INFINILM_PROFILE_STEPS", "0"))
-        return cls(
+        prof = cls(
             enabled=enabled,
             sync=_truthy(os.getenv("INFINILM_PROFILE_SYNC", "0")),
             trace_path=os.getenv("INFINILM_PROFILE_TRACE") or None,
             max_steps=int(os.getenv("INFINILM_PROFILE_MAX_STEPS", "200000")),
         )
+        if prof.enabled:
+            atexit.register(prof.flush)
+        return prof
 
     @classmethod
     def disabled(cls):
@@ -215,7 +223,8 @@ class ServingProfiler:
             return
         self._flushed = True
         try:
-            print(self.format_summary(), file=sys.stderr)
+            if self.agg["steps"]:
+                print(self.format_summary(), file=sys.stderr)
         finally:
             if self._trace_fh is not None:
                 try:
